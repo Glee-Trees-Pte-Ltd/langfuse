@@ -13,9 +13,22 @@ import {
   clampDecimal64Value,
   truncateOversizedRecord,
 } from "./jsonRecords";
+import { replayDeadLetterBatch } from "./deadLetter";
 
-const { encodeClickhouseEventsMock } = vi.hoisted(() => ({
+const {
+  encodeClickhouseEventsMock,
+  storageMock,
+  replayQueueMock,
+  sharedClickhouseClientMock,
+} = vi.hoisted(() => ({
   encodeClickhouseEventsMock: vi.fn(),
+  storageMock: {
+    uploadFile: vi.fn(),
+    download: vi.fn(),
+    deleteFiles: vi.fn(),
+  },
+  replayQueueMock: { add: vi.fn() },
+  sharedClickhouseClientMock: { insert: vi.fn() },
 }));
 
 vi.mock("@langfuse/native", () => ({
@@ -41,6 +54,9 @@ vi.mock("@langfuse/shared/src/server", async (importOriginal) => {
     recordIncrement: vi.fn(),
     recordCount: vi.fn(),
     recordGauge: vi.fn(),
+    createEventUploadStorageService: () => storageMock,
+    ClickhouseWriterReplayQueue: { getInstance: () => replayQueueMock },
+    clickhouseClient: () => sharedClickhouseClientMock,
     logger: {
       info: vi.fn(),
       debug: vi.fn(),
@@ -59,6 +75,14 @@ vi.mock("../../env", async (importOriginal) => {
       LANGFUSE_INGESTION_CLICKHOUSE_WRITE_BATCH_SIZE: 100,
       LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS: 5000,
       LANGFUSE_INGESTION_CLICKHOUSE_MAX_ATTEMPTS: 3,
+      LANGFUSE_CLICKHOUSE_WRITER_DEAD_LETTER_TABLES: [
+        "topic_facet_summaries",
+        "topic_assignments",
+      ],
+      LANGFUSE_CLICKHOUSE_WRITER_DEAD_LETTER_S3_PREFIX:
+        "clickhouse-writer-dlq/",
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/",
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "bucket",
     },
   };
 });
@@ -569,6 +593,173 @@ describe("ClickhouseWriter", () => {
       1,
       { entity_type: TableName.Traces, format: "json", reason: "other" },
     );
+  });
+
+  describe("dead-letter staging", () => {
+    const topicSummary = (traceId: string) =>
+      ({
+        project_id: "project-1",
+        facet_id: "facet-1",
+        facet_version: 1,
+        trace_id: traceId,
+        session_id: "",
+        metadata: "{}",
+        cost_details: {},
+        provided_cost_details: {},
+      }) as any;
+
+    const stagedBody = async (call: number) => {
+      const { data } = storageMock.uploadFile.mock.calls[call][0];
+      let body = "";
+      for await (const chunk of data) body += chunk;
+      return JSON.parse(body);
+    };
+
+    beforeEach(() => {
+      storageMock.uploadFile.mockResolvedValue(undefined);
+      replayQueueMock.add.mockResolvedValue(undefined);
+    });
+
+    it("stages allowlisted rows and enqueues a replay instead of dropping them", async () => {
+      writer.maxAttempts = 1;
+      vi.spyOn(clickhouseClientMock, "insert").mockRejectedValue(
+        new Error("DB Error"),
+      );
+
+      writer.addToQueue(TableName.TopicFacetSummaries, topicSummary("t-1"));
+      await writer["flushAll"](true);
+
+      const { fileName } = storageMock.uploadFile.mock.calls[0][0];
+      expect(fileName).toMatch(
+        /^events\/clickhouse-writer-dlq\/topic_facet_summaries\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.json$/,
+      );
+      expect(await stagedBody(0)).toMatchObject({
+        schemaVersion: 1,
+        table: "topic_facet_summaries",
+        reason: "max_attempts",
+        rows: [{ trace_id: "t-1" }],
+      });
+      expect(replayQueueMock.add).toHaveBeenCalledWith(
+        "clickhouse-writer-replay-job",
+        expect.objectContaining({
+          payload: {
+            table: "topic_facet_summaries",
+            key: fileName,
+            rowCount: 1,
+          },
+        }),
+        expect.objectContaining({ jobId: expect.any(String) }),
+      );
+      expect(serverExports.recordIncrement).toHaveBeenCalledWith(
+        "langfuse.queue.clickhouse_writer.dead_letter",
+        1,
+        {
+          entity_type: "topic_facet_summaries",
+          reason: "max_attempts",
+          outcome: "staged",
+        },
+      );
+      expect(serverExports.recordIncrement).not.toHaveBeenCalledWith(
+        "langfuse.queue.clickhouse_writer.rows_dropped",
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("counts rows as dropped when staging fails", async () => {
+      writer.maxAttempts = 1;
+      storageMock.uploadFile.mockRejectedValue(new Error("S3 down"));
+      vi.spyOn(clickhouseClientMock, "insert").mockRejectedValue(
+        new Error("DB Error"),
+      );
+
+      writer.addToQueue(TableName.TopicAssignments, topicSummary("t-1"));
+      await writer["flushAll"](true);
+
+      expect(replayQueueMock.add).not.toHaveBeenCalled();
+      expect(serverExports.recordIncrement).toHaveBeenCalledWith(
+        "langfuse.queue.clickhouse_writer.rows_dropped",
+        1,
+        expect.objectContaining({ entity_type: "topic_assignments" }),
+      );
+    });
+
+    it("stages allowlisted rows still queued after a failed shutdown flush", async () => {
+      vi.spyOn(clickhouseClientMock, "insert").mockRejectedValue(
+        new Error("DB Error"),
+      );
+
+      writer.addToQueue(TableName.TopicFacetSummaries, topicSummary("t-1"));
+      writer.addToQueue(TableName.Traces, { id: "1", name: "test" } as any);
+      await writer.shutdown();
+
+      expect(storageMock.uploadFile).toHaveBeenCalledTimes(1);
+      expect(await stagedBody(0)).toMatchObject({
+        table: "topic_facet_summaries",
+        reason: "shutdown",
+      });
+      expect(serverExports.recordIncrement).toHaveBeenCalledWith(
+        "langfuse.queue.clickhouse_writer.rows_dropped",
+        1,
+        { entity_type: "traces", format: "json", reason: "shutdown" },
+      );
+      expect(writer["queue"][TableName.TopicFacetSummaries]).toHaveLength(0);
+    });
+
+    it("replays a staged batch into its table and removes the object", async () => {
+      storageMock.download.mockResolvedValue(
+        JSON.stringify({
+          schemaVersion: 1,
+          table: "topic_facet_summaries",
+          reason: "shutdown",
+          rows: [topicSummary("t-1")],
+        }),
+      );
+      sharedClickhouseClientMock.insert.mockResolvedValue(undefined);
+
+      await replayDeadLetterBatch({
+        data: { payload: { table: "x", key: "k.json", rowCount: 1 } },
+        attemptsMade: 0,
+      } as any);
+
+      expect(sharedClickhouseClientMock.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          table: "topic_facet_summaries",
+          format: "JSONEachRow",
+          values: [expect.objectContaining({ trace_id: "t-1" })],
+        }),
+      );
+      expect(storageMock.deleteFiles).toHaveBeenCalledWith(["k.json"]);
+    });
+
+    it("keeps the object when the replay insert fails so the job can retry", async () => {
+      storageMock.download.mockResolvedValue(
+        JSON.stringify({
+          schemaVersion: 1,
+          table: "topic_assignments",
+          reason: "max_attempts",
+          rows: [topicSummary("t-1")],
+        }),
+      );
+      sharedClickhouseClientMock.insert.mockRejectedValue(
+        new Error("DB Error"),
+      );
+
+      await expect(
+        replayDeadLetterBatch({
+          data: { payload: { table: "x", key: "k.json", rowCount: 1 } },
+          attemptsMade: 0,
+        } as any),
+      ).rejects.toThrow("DB Error");
+      expect(storageMock.deleteFiles).not.toHaveBeenCalled();
+    });
+
+    it("leaves a Topics metadata JSON string untouched when truncating", () => {
+      const row = { ...topicSummary("t-1"), metadata: '{"a":1}' };
+      expect(
+        truncateOversizedRecord(TableName.TopicFacetSummaries, row).metadata,
+      ).toBe('{"a":1}');
+    });
   });
 
   it("should retry client request timeouts within the same flush", async () => {

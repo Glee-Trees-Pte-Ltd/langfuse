@@ -284,6 +284,16 @@ export const DeadLetterRetryQueueEventSchema = z.object({
   timestamp: z.date(),
 });
 
+/** Points at ClickHouse writer rows that were staged in blob storage after failed inserts. */
+export const ClickhouseWriterReplayEventSchema = z.object({
+  table: z.string(),
+  key: z.string(),
+  rowCount: z.number().int().nonnegative(),
+});
+export type ClickhouseWriterReplayEventType = z.infer<
+  typeof ClickhouseWriterReplayEventSchema
+>;
+
 export const NotificationEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("COMMENT_MENTION"),
@@ -452,6 +462,7 @@ export enum QueueName {
   MonitorQueue = "monitor-queue",
   InAppAgentRunQueue = "in-app-agent-run-queue",
   V4LegacyApiUsageQueue = "v4-legacy-api-usage-queue",
+  ClickhouseWriterReplayQueue = "clickhouse-writer-replay-queue",
 }
 
 export enum QueueJobs {
@@ -496,6 +507,7 @@ export enum QueueJobs {
   MonitorJob = "monitor-job",
   InAppAgentRunJob = "in-app-agent-run-job",
   V4LegacyApiUsageJob = "v4-legacy-api-usage-job",
+  ClickhouseWriterReplayJob = "clickhouse-writer-replay-job",
 }
 
 export const TraceBatchTraceSchema = z.object({
@@ -747,6 +759,12 @@ export type TQueueJobTypes = {
     id: string;
     payload: EntityChangeEventType;
     name: QueueJobs.EntityChangeJob;
+  };
+  [QueueName.ClickhouseWriterReplayQueue]: {
+    timestamp: Date;
+    id: string;
+    payload: ClickhouseWriterReplayEventType;
+    name: QueueJobs.ClickhouseWriterReplayJob;
   };
   // Per-org evaluation, plus the recurring fan-out that produces those jobs
   // for ClickHouse-billed orgs (Stripe-billed ones are enqueued by the usage
