@@ -87,7 +87,6 @@ import { batchActionQueueProcessor } from "./queues/batchActionQueue";
 import { scoreDeleteProcessor } from "./queues/scoreDelete";
 import { DlqRetryService } from "./services/dlq/dlqRetryService";
 import { entityChangeQueueProcessor } from "./queues/entityChangeQueue";
-import { replayDeadLetterBatch } from "./services/ClickhouseWriter/deadLetter";
 import { webhookProcessor } from "./queues/webhooks";
 import { datasetDeleteProcessor } from "./queues/datasetDelete";
 import { otelIngestionQueueProcessorBuilder } from "./queues/otelIngestionQueue";
@@ -740,16 +739,6 @@ if (env.QUEUE_CONSUMER_ENTITY_CHANGE_QUEUE_IS_ENABLED === "true") {
     entityChangeQueueProcessor,
     {
       concurrency: env.LANGFUSE_ENTITY_CHANGE_QUEUE_PROCESSING_CONCURRENCY,
-    },
-  );
-}
-
-if (env.QUEUE_CONSUMER_CLICKHOUSE_WRITER_REPLAY_QUEUE_IS_ENABLED === "true") {
-  WorkerManager.register(
-    QueueName.ClickhouseWriterReplayQueue,
-    replayDeadLetterBatch,
-    {
-      concurrency: 1,
     },
   );
 }

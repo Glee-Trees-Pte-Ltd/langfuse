@@ -291,21 +291,6 @@ const EnvSchema = z.object({
     .number()
     .positive()
     .default(3),
-  // Tables whose rows the ClickHouse writer stages in the event bucket and
-  // replays instead of dropping after the final failed insert attempt.
-  LANGFUSE_CLICKHOUSE_WRITER_DEAD_LETTER_TABLES: z
-    .string()
-    .default("topic_facet_summaries,topic_assignments")
-    .transform((value) =>
-      value
-        .split(",")
-        .map((table) => table.trim())
-        .filter(Boolean),
-    ),
-  // Appended to LANGFUSE_S3_EVENT_UPLOAD_PREFIX.
-  LANGFUSE_CLICKHOUSE_WRITER_DEAD_LETTER_S3_PREFIX: z
-    .string()
-    .default("clickhouse-writer-dlq/"),
 
   LANGFUSE_USE_AZURE_BLOB: z.enum(["true", "false"]).default("false"),
 
@@ -543,9 +528,6 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("true"),
   QUEUE_CONSUMER_ENTITY_CHANGE_QUEUE_IS_ENABLED: z
-    .enum(["true", "false"])
-    .default("true"),
-  QUEUE_CONSUMER_CLICKHOUSE_WRITER_REPLAY_QUEUE_IS_ENABLED: z
     .enum(["true", "false"])
     .default("true"),
   QUEUE_CONSUMER_EVENT_PROPAGATION_QUEUE_IS_ENABLED: z

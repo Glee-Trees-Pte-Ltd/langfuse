@@ -24,7 +24,6 @@ import {
 } from "./writeStrategies";
 import { TableName, type RecordInsertType } from "./types";
 import { classifyJobFailure } from "../../queues/jobFailureReason";
-import { isDeadLetterTable, stageDeadLetterRows } from "./deadLetter";
 export { TableName } from "./types";
 
 const MULTI_PROJECT_LOG_COMMENT_PROJECT_ID = "MULTI_PROJECT";
@@ -171,7 +170,6 @@ export class ClickhouseWriter<
     }
 
     await this.flushAll(true);
-    await this.stageRowsLeftAfterShutdown();
 
     this.logger.info(`${this.logPrefix}ClickhouseWriter shutdown complete.`);
   }
@@ -500,75 +498,25 @@ export class ClickhouseWriter<
       });
 
       if (droppedCount > 0) {
-        const droppedItems = queueItems.filter(
-          (item) => item.attempts >= this.maxAttempts,
+        recordIncrement(
+          "langfuse.queue.clickhouse_writer.rows_dropped",
+          droppedCount,
+          {
+            entity_type: tableName,
+            format: this.strategyFactory.format,
+            reason,
+          },
         );
-        const staged =
-          this.canDeadLetter(tableName) &&
-          (await stageDeadLetterRows(
-            tableName,
-            droppedItems.map((item) => item.data),
-            "max_attempts",
-          ));
 
-        if (!staged) {
-          recordIncrement(
-            "langfuse.queue.clickhouse_writer.rows_dropped",
-            droppedCount,
-            {
-              entity_type: tableName,
-              format: this.strategyFactory.format,
-              reason,
-            },
-          );
+        const droppedIds = queueItems
+          .filter((item) => item.attempts >= this.maxAttempts)
+          .map((item) => writeStrategy.droppedId(item.data));
 
-          const droppedIds = droppedItems.map((item) =>
-            writeStrategy.droppedId(item.data),
-          );
-
-          this.logger.error(
-            `${this.logPrefix}ClickhouseWriter: Max attempts reached, dropped ${droppedCount} ${tableName} record(s)`,
-            { droppedIds },
-          );
-        }
+        this.logger.error(
+          `${this.logPrefix}ClickhouseWriter: Max attempts reached, dropped ${droppedCount} ${tableName} record(s)`,
+          { droppedIds },
+        );
       }
-    }
-  }
-
-  /** Native payloads are encoder input, not JSON rows that a replay could insert. */
-  private canDeadLetter(tableName: TableName): boolean {
-    return (
-      this.strategyFactory.format === "json" && isDeadLetterTable(tableName)
-    );
-  }
-
-  /** Rows requeued by a failed final flush would otherwise vanish with the process. */
-  private async stageRowsLeftAfterShutdown() {
-    for (const tableName of Object.values(TableName)) {
-      const leftover = this.queue[tableName].splice(0);
-      if (leftover.length === 0) continue;
-
-      const staged =
-        this.canDeadLetter(tableName) &&
-        (await stageDeadLetterRows(
-          tableName,
-          leftover.map((item) => item.data),
-          "shutdown",
-        ));
-      if (staged) continue;
-
-      recordIncrement(
-        "langfuse.queue.clickhouse_writer.rows_dropped",
-        leftover.length,
-        {
-          entity_type: tableName,
-          format: this.strategyFactory.format,
-          reason: "shutdown",
-        },
-      );
-      this.logger.error(
-        `${this.logPrefix}ClickhouseWriter: dropped ${leftover.length} ${tableName} record(s) left after shutdown flush`,
-      );
     }
   }
 
