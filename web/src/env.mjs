@@ -286,6 +286,7 @@ export const env = createEnv({
     AUTH_IGNORE_ACCOUNT_FIELDS: z.string().optional(),
     AUTH_DISABLE_USERNAME_PASSWORD: z.enum(["true", "false"]).optional(),
     AUTH_DISABLE_SIGNUP: z.enum(["true", "false"]).optional(),
+    AUTH_SIGNUP_INVITE_ONLY: z.enum(["true", "false"]).optional(),
     LANGFUSE_DISABLE_SIGNUP_ONBOARDING: z.enum(["true", "false"]).optional(),
     AUTH_EMAIL_VERIFICATION_REQUIRED: z
       .enum(["true", "false"])
@@ -1034,6 +1035,7 @@ export const env = createEnv({
       process.env.AUTH_DOMAINS_WITH_SSO_ENFORCEMENT,
     AUTH_DISABLE_USERNAME_PASSWORD: process.env.AUTH_DISABLE_USERNAME_PASSWORD,
     AUTH_DISABLE_SIGNUP: process.env.AUTH_DISABLE_SIGNUP,
+    AUTH_SIGNUP_INVITE_ONLY: process.env.AUTH_SIGNUP_INVITE_ONLY,
     LANGFUSE_DISABLE_SIGNUP_ONBOARDING:
       process.env.LANGFUSE_DISABLE_SIGNUP_ONBOARDING,
     AUTH_EMAIL_VERIFICATION_REQUIRED:

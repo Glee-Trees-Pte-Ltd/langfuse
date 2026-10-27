@@ -11,6 +11,10 @@ import {
 } from "@/src/features/auth/server/verifyTurnstile";
 import { getAdClickIdsFromRequest } from "@/src/features/auth/lib/signupAttribution";
 import { signupSchema } from "@/src/features/auth/lib/signupSchema";
+import {
+  INVITE_ONLY_SIGNUP_MESSAGE,
+  isSignupAllowedForEmail,
+} from "@/src/features/auth/server/signupInvitation";
 import { getSsoAuthProviderIdForDomain } from "@/src/ee/features/multi-tenant-sso/server";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { logger } from "@langfuse/shared/src/server";
@@ -57,6 +61,10 @@ export async function validateSignupEligibility({
     return ENTERPRISE_SSO_REQUIRED_MESSAGE;
   }
 
+  if (!(await isSignupAllowedForEmail(email))) {
+    return INVITE_ONLY_SIGNUP_MESSAGE;
+  }
+
   return null;
 }
 
@@ -72,8 +80,10 @@ export async function signupApiHandler(
     return res.status(405).json({ message: "Method not allowed" });
   }
 
-  // Block direct signup when email verification is required
-  if (isEmailVerificationRequired()) {
+  // Only the email-verified flow proves the person signing up controls the invited inbox, so a
+  // direct password sign-up is refused whenever that proof is expected: email verification is on,
+  // or sign-up is invite-only.
+  if (isEmailVerificationRequired() || env.AUTH_SIGNUP_INVITE_ONLY === "true") {
     res.status(403).json({
       message:
         "Direct signup is disabled. Please use the email verification flow.",

@@ -86,6 +86,10 @@ import {
   getSelfHostedInstancePlanServerSide,
 } from "@/src/features/entitlements/server/getPlan";
 import { getSSOBlockedDomains } from "@/src/features/auth-credentials/server/signupApiHandler";
+import {
+  INVITE_ONLY_SIGNUP_MESSAGE,
+  isSignupAllowedForEmail,
+} from "@/src/features/auth/server/signupInvitation";
 import { createSupportEmailHash } from "@/src/features/support-chat/createSupportEmailHash";
 import {
   canToggleV4,
@@ -658,6 +662,9 @@ const createExtendedPrismaAdapter = (signupAttribution?: {
         "Cannot create db user as login profile does not contain an email: " +
           JSON.stringify(profile),
       );
+    }
+    if (!(await isSignupAllowedForEmail(profile.email))) {
+      throw new Error(INVITE_ONLY_SIGNUP_MESSAGE);
     }
 
     const user = await prismaAdapter.createUser(profile);
