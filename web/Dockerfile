@@ -231,7 +231,10 @@ ENV NEXT_MANUAL_SIG_HANDLE true
 # set the CI flag to true to get CI specific logs
 ENV CI true
 
-RUN NODE_OPTIONS='--max-old-space-size-percentage=75' turbo run build --filter=web...
+# A percentage heap sizes itself against the host's total memory, which on a 16 GB CI runner asks
+# for a heap the machine cannot back, and the build is killed before it finishes. Cap it at a fixed
+# size that fits a small runner with swap.
+RUN NODE_OPTIONS='--max-old-space-size=8192' turbo run build --filter=web...
 
 # Production image, copy all the files and run next
 FROM --platform=${TARGETPLATFORM:-linux/amd64} runtime-base AS runner
