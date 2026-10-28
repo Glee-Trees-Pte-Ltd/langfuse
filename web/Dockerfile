@@ -233,7 +233,7 @@ ENV CI true
 
 # A percentage heap sizes itself against the host's total memory, which on a 16 GB CI runner asks
 # for a heap the machine cannot back, and the build is killed before it finishes. Cap it at a fixed
-# size that fits a small runner with swap.
+# size that fits a small runner.
 RUN NODE_OPTIONS='--max-old-space-size=8192' turbo run build --filter=web...
 
 # Production image, copy all the files and run next
